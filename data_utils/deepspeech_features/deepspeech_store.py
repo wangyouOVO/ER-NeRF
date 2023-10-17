@@ -50,7 +50,7 @@ def get_deepspeech_model_file(local_model_store_dir_path=os.path.join("~", ".ten
             repo_release_tag="v0.0.1",
             file_name=file_name),
         path=zip_file_path,
-        overwrite=True)
+        overwrite=False)
     with zipfile.ZipFile(zip_file_path) as zf:
         zf.extractall(local_model_store_dir_path)
     os.remove(zip_file_path)

@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader
 from .utils import get_audio_features, get_rays, get_bg_coords, convert_poses
 
 # ref: https://github.com/NVlabs/instant-ngp/blob/b76004c8cf478880227401ae763be4c02f80b62f/include/neural-graphics-primitives/nerf_loader.h#L50
+#对旋转矩阵进行转变
 def nerf_matrix_to_ngp(pose, scale=0.33, offset=[0, 0, 0]):
     new_pose = np.array([
         [pose[1, 0], -pose[1, 1], -pose[1, 2], pose[1, 3] * scale + offset[0]],
@@ -25,7 +26,7 @@ def nerf_matrix_to_ngp(pose, scale=0.33, offset=[0, 0, 0]):
     ], dtype=np.float32)
     return new_pose
 
-
+# 将相机的姿态进行平滑，防止脸部异常抖动
 def smooth_camera_path(poses, kernel_size=5):
     # smooth the camera trajectory...
     # poses: [N, 4, 4], numpy array
@@ -44,6 +45,8 @@ def smooth_camera_path(poses, kernel_size=5):
 
     return poses
 
+
+#计算多边形的面积
 def polygon_area(x, y):
     x_ = x - x.mean()
     y_ = y - y.mean()
@@ -52,6 +55,7 @@ def polygon_area(x, y):
     return 0.5 * np.abs(main_area + correction)
 
 
+#可视化相机姿态，debug的时候用到
 def visualize_poses(poses, size=0.1):
     # poses: [B, 4, 4]
 
@@ -80,7 +84,7 @@ def visualize_poses(poses, size=0.1):
 
     trimesh.Scene(objects).show()
 
-
+#Pose,aud,eye_area,内参，外参，背景坐标
 class NeRFDataset_Test:
     def __init__(self, opt, device, downscale=1):
         super().__init__()
@@ -127,6 +131,7 @@ class NeRFDataset_Test:
             aud_features = torch.from_numpy(aud_features)
 
             # support both [N, 16] labels and [N, 16, K] logits
+            #TODO: 音频维度？emb到底在做什么？
             if len(aud_features.shape) == 3:
                 aud_features = aud_features.float().permute(0, 2, 1) # [N, 16, 29] --> [N, 29, 16]    
 
@@ -165,7 +170,7 @@ class NeRFDataset_Test:
                 self.eye_area.append(area)
         
         # load pre-extracted background image (should be the same size as training image...)
-
+        #修改背景
         if self.opt.bg_img == 'white': # special
             bg_img = np.ones((self.H, self.W, 3), dtype=np.float32)
         elif self.opt.bg_img == 'black': # special
@@ -236,8 +241,10 @@ class NeRFDataset_Test:
         self.intrinsics = np.array([fl_x, fl_y, cx, cy])
 
         # directly build the coordinate meshgrid in [-1, 1]^2
+        #H*W个点，每个点有2个维度坐标（x,y）,范围在[-1,1]
         self.bg_coords = get_bg_coords(self.H, self.W, self.device) # [1, H*W, 2] in [-1, 1]
     
+    #人脸姿态并不是循环使用，而是镜像使用（0->N->0->n）保持连贯性
     def mirror_index(self, index):
         size = self.poses.shape[0]
         turn = index // size
@@ -393,7 +400,7 @@ class NeRFDataset:
                 if 'esperanto' in self.opt.asr_model:
                     aud_features = np.load(os.path.join(self.root_path, 'aud_eo.npy'))
                 elif 'deepspeech' in self.opt.asr_model:
-                    aud_features = np.load(os.path.join(self.root_path, 'aud_ds.npy'))
+                    aud_features = np.load(os.path.join(self.root_path, 'aud.npy'))
                 # elif 'hubert_cn' in self.opt.asr_model:
                 #     aud_features = np.load(os.path.join(self.root_path, 'aud_hu_cn.npy'))
                 elif 'hubert' in self.opt.asr_model:
@@ -432,8 +439,11 @@ class NeRFDataset:
         self.exps = []
 
         self.auds = []
+        
+        #face_rect是整个脸的bbox,lhalf_rect是半张脸(鼻子？)的bbox
         self.face_rect = []
         self.lhalf_rect = []
+        #以嘴唇为中心的方形区域，覆盖整个嘴唇的区域
         self.lips_rect = []
         self.eye_area = []
         self.eye_rect = []
@@ -449,7 +459,8 @@ class NeRFDataset:
             pose = np.array(f['transform_matrix'], dtype=np.float32) # [4, 4]
             pose = nerf_matrix_to_ngp(pose, scale=self.scale, offset=self.offset)
             self.poses.append(pose)
-
+            
+            #是否在这将图片给加载进内存
             if self.preload > 0:
                 image = cv2.imread(f_path, cv2.IMREAD_UNCHANGED) # [H, W, 3] o [H, W, 4]
                 image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -645,7 +656,8 @@ class NeRFDataset:
 
 
     def collate(self, index):
-
+        
+        
         B = len(index) # a list of length 1
         # assert B == 1
 

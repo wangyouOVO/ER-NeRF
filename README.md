@@ -89,6 +89,12 @@ In our paper, we use DeepSpeech features for evaluation.
 
 You should specify the type of audio feature by `--asr_model <deepspeech, esperanto, hubert>` when **training and testing**.
 
+## <span style="color:red">Attention</span>
+please downgrade protobuf
+```
+pip install --upgrade "protobuf<=3.20.1"
+```
+
 * DeepSpeech
 
   ```bash
@@ -139,6 +145,10 @@ python main.py data/obama/ --workspace trial_obama_torso/ -O --torso --test # re
 ```bash
 # Adding "--smooth_path" may help decrease the jitter of the head, while being less accurate to the original pose.
 python main.py data/obama/ --workspace trial_obama_torso/ -O --torso --test --test_train --aud <audio>.npy
+```
+
+```
+ffmpeg -i video.mp4/video.avi -i audio.wav -c:v copy -c:a aac -map 0:v:0 -map 1:a:0 output.mp4
 ```
 
 ## Citation

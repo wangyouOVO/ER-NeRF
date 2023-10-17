@@ -46,7 +46,7 @@ def sample_pdf(bins, weights, n_samples, det=False):
 
     return samples
 
-
+#点云数据可视化
 def plot_pointcloud(pc, color=None):
     # pc: [N, 3]
     # color: [N, 3/4]

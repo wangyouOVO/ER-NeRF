@@ -17,3 +17,6 @@ scripts/*
 
 pretrained
 *.mp4
+
+workspace/
+*.ipynb

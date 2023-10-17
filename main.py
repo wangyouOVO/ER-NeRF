@@ -26,6 +26,7 @@ if __name__ == '__main__':
 
     ### training options
     parser.add_argument('--iters', type=int, default=200000, help="training iters")
+    #lr是空间特征的学习率，lr_net是网络的学习率
     parser.add_argument('--lr', type=float, default=1e-2, help="initial learning rate")
     parser.add_argument('--lr_net', type=float, default=1e-3, help="initial learning rate")
     parser.add_argument('--ckpt', type=str, default='latest')

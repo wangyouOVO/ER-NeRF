@@ -109,7 +109,9 @@ class NeRFNetwork(NeRFRenderer):
             self.audio_in_dim = 1024
         else:
             self.audio_in_dim = 32
-            
+        
+        # self.embedding 变量是一个嵌入层的实例，可以在你自定义的神经网络模块中使用，在网络的前向传播过程中，
+        # 它将音频数据的分类信息嵌入为连续向量。这对于诸如语音识别或音频分类等任务非常有用。
         if self.emb:
             self.embedding = nn.Embedding(self.audio_in_dim, self.audio_in_dim)
 
@@ -122,6 +124,7 @@ class NeRFNetwork(NeRFRenderer):
             self.audio_att_net = AudioAttNet(self.audio_dim)
 
         # DYNAMIC PART
+        #三平面哈希编码器
         self.num_levels = 12
         self.level_dim = 1
         self.encoder_xy, self.in_dim_xy = get_encoder('hashgrid', input_dim=2, num_levels=self.num_levels, level_dim=self.level_dim, base_resolution=64, log2_hashmap_size=14, desired_resolution=512 * self.bound)
@@ -131,12 +134,14 @@ class NeRFNetwork(NeRFRenderer):
         self.in_dim = self.in_dim_xy + self.in_dim_yz + self.in_dim_xz
 
         ## sigma network
+        #输出空间点密度，使用了音频和眨眼信息。输出 1 + geo_feat_dim ，1是密度值，geo_feat_dim是空间隐式特征，用来作为color网络的输入
         self.num_layers = 3
         self.hidden_dim = 64
         self.geo_feat_dim = 64
         self.eye_att_net = MLP(self.in_dim, 1, 16, 2)
         self.eye_dim = 1 if self.exp_eye else 0
         self.sigma_net = MLP(self.in_dim + self.audio_dim + self.eye_dim, 1 + self.geo_feat_dim, self.hidden_dim, self.num_layers)
+        
         ## color network
         self.num_layers_color = 2
         self.hidden_dim_color = 64
@@ -151,7 +156,7 @@ class NeRFNetwork(NeRFRenderer):
 
         if self.torso:
             # torso deform network
-            self.register_parameter('anchor_points', 
+            self.register_parameter('anchor_points',  
                                     nn.Parameter(torch.tensor([[0.01, 0.01, 0.1, 1], [-0.1, -0.1, 0.1, 1], [0.1, -0.1, 0.1, 1]])))
             self.torso_deform_encoder, self.torso_deform_in_dim = get_encoder('frequency', input_dim=2, multires=8)
             # self.torso_deform_encoder, self.torso_deform_in_dim = get_encoder('tiledgrid', input_dim=2, num_levels=16, level_dim=1, base_resolution=16, log2_hashmap_size=16, desired_resolution=512)
@@ -203,11 +208,12 @@ class NeRFNetwork(NeRFRenderer):
 
     @staticmethod
     @torch.jit.script
+    #将(x , y, z)坐标转化为(x , y) (y , z) (x, z)
     def split_xyz(x):
         xy, yz, xz = x[:, :-1], x[:, 1:], torch.cat([x[:,:1], x[:,-1:]], dim=-1)
         return xy, yz, xz
 
-
+    #对空间坐标进行三平面哈希编码
     def encode_x(self, xyz, bound):
         # x: [N, 3], in [-bound, bound]
         N, M = xyz.shape

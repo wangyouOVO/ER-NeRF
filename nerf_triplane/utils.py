@@ -704,6 +704,8 @@ class Trainer(object):
                 self.log(f"[INFO] Loading {self.use_checkpoint} ...")
                 self.load_checkpoint(self.use_checkpoint)
 
+
+#在log中记录训练过程
     def __del__(self):
         if self.log_ptr: 
             self.log_ptr.close()
