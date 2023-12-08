@@ -44,6 +44,9 @@ if __name__ == '__main__':
     parser.add_argument('--amb_eye_loss', type=int, default=1, help="use ambient eye loss")
     parser.add_argument('--unc_loss', type=int, default=1, help="use uncertainty loss")
     parser.add_argument('--lambda_amb', type=float, default=1e-4, help="lambda for ambient loss")
+    parser.add_argument('--use_depth_loss', action='store_true', help="use depth loss")
+    parser.add_argument('--depth_weight', type=float, default=0.02, help="depth loss weight")
+    
 
     ### network backbone options
     parser.add_argument('--fp16', action='store_true', help="use amp mixed precision training")
@@ -185,6 +188,7 @@ if __name__ == '__main__':
         if opt.test_train:
             test_set = NeRFDataset(opt, device=device, type='train')
             # a manual fix to test on the training dataset
+            # 下面两步的主要作用就是让采样光线不随机采样而是全局覆盖采样
             test_set.training = False 
             test_set.num_rays = -1
             test_loader = test_set.dataloader()
@@ -209,8 +213,6 @@ if __name__ == '__main__':
             ### evaluate metrics (slow)
             if test_loader.has_gt:
                 trainer.evaluate(test_loader)
-
-
     
     else:
 
@@ -218,8 +220,10 @@ if __name__ == '__main__':
 
         train_loader = NeRFDataset(opt, device=device, type='train').dataloader()
 
+        #len(train_loader)的长度等于数据中所有帧的数量,因为要给每一帧安排一个individual code 
         assert len(train_loader) < opt.ind_num, f"[ERROR] dataset too many frames: {len(train_loader)}, please increase --ind_num to this number!"
 
+        #这种写法真抽象啊，
         # temp fix: for update_extra_states
         model.aud_features = train_loader._data.auds
         model.eye_area = train_loader._data.eye_area

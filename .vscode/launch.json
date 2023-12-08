@@ -1,0 +1,24 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python 文件调试",
+            "type": "python",
+            "request": "launch",
+            "program": "main.py",
+            "args": [
+                "data/wen1",
+                "--use_depth_loss",
+                "--workspace",
+                "workspace/wen1/trial_wen1/",
+                "-O",
+                "--iters",
+                "100000"
+            ],
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "7"
+            },
+            "console": "integratedTerminal"
+        }
+    ]
+}

@@ -278,6 +278,7 @@ class NeRFNetwork(NeRFRenderer):
         color = torch.sigmoid(h_color)*(1 + 2*0.001) - 0.001
         
         uncertainty = self.predict_uncertainty(enc_x)
+        #指数加一在对数，使得所有结果大于0！
         uncertainty = torch.log(1 + torch.exp(uncertainty))
 
         return sigma, color, aud_ch_att, eye_att, uncertainty[..., None]
@@ -289,6 +290,7 @@ class NeRFNetwork(NeRFRenderer):
             enc_x = self.encode_x(x, bound=self.bound)
 
         enc_a = enc_a.repeat(enc_x.shape[0], 1)
+        # aud_ch_att 是 enc_x 经过 aud_ch_att_net 网络后，得到的音频特征权重，aud_ch_att_net纯纯MLP一个
         aud_ch_att = self.aud_ch_att_net(enc_x)
         enc_w = enc_a * aud_ch_att
 
@@ -301,8 +303,10 @@ class NeRFNetwork(NeRFRenderer):
         else:
             h = torch.cat([enc_x, enc_w], dim=-1)
 
-        h = self.sigma_net(h)
+        h = self.sigma_net(h) # sigma_net 也纯纯 MLP 一个，输入[enc_x, enc_w, e]，输出[sigma,geo_feat]
 
+        #density网络输出的第一位作为sigma密度值
+        #后面的所有位作为空间几何特征，给将来的RGB预测网络使用
         sigma = torch.exp(h[..., 0])
         geo_feat = h[..., 1:]
 

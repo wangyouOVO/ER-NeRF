@@ -205,7 +205,10 @@ class _march_rays_train(Function):
         Returns:
             xyzs: float, [M, 3], all generated points' coords. (all rays concated, need to use `rays` to extract points belonging to each ray)
             dirs: float, [M, 3], all generated points' view dirs.
+                delta_t：表示每个点相对于前一个点的时间步长。这个值告诉我们生成的点之间的时间间隔，可以用于计算渲染时的积分。
+                rays_t：表示每个点相对于射线原点的时间步长。这个值告诉我们每个生成的点在沿射线的时间坐标上的位置，可以用于沿射线生成点时的步进
             deltas: float, [M, 2], first is delta_t, second is rays_t
+            rays:这是一个形状为 [N, 3] 的整数张量，其中 N 表示射线的数量。每行包含三个整数值，分别表示射线的索引、点的偏移和点的数量。这些信息用于将生成的点与其所属的射线关联起来
             rays: int32, [N, 3], all rays' (index, point_offset, point_count), e.g., xyzs[rays[i, 1]:rays[i, 1] + rays[i, 2]] --> points belonging to rays[i, 0]
         '''
 

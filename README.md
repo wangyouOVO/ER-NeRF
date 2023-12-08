@@ -148,7 +148,7 @@ python main.py data/obama/ --workspace trial_obama_torso/ -O --torso --test --te
 ```
 
 ```
-ffmpeg -i video.mp4/video.avi -i audio.wav -c:v copy -c:a aac -map 0:v:0 -map 1:a:0 output.mp4
+ffmpeg -i workspace/obama/trial_obama_depth_3dmmv2/results/ngp_ep0018.mp4 -i data/audio/leijun.wav -c:v copy -c:a aac -map 0:v:0 -map 1:a:0 3dmm_v2.mp4
 ```
 
 ## Citation

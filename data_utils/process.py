@@ -368,8 +368,8 @@ if __name__ == '__main__':
 
 
     # extract audio
-    if opt.task == -1 or opt.task == 1:
-        extract_audio(opt.path, wav_path)
+    # if opt.task == -1 or opt.task == 1:
+    #     extract_audio(opt.path, wav_path)
 
     # extract audio features
     if opt.task == -1 or opt.task == 2:

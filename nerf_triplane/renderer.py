@@ -89,6 +89,8 @@ class NeRFRenderer(nn.Module):
         self.register_buffer('aabb_infer', aabb_infer)
 
         # individual codes
+        #ind_num = 10000或其他数，只要大于帧数就行
+        #ind_dim = 4 ，给每一帧都保证能配备一个4位的individual code，以加强每一帧的特异性
         self.individual_num = opt.ind_num
 
         self.individual_dim = opt.ind_dim
@@ -107,7 +109,8 @@ class NeRFRenderer(nn.Module):
             self.camera_dT = nn.Parameter(torch.zeros(self.individual_num, 3)) # xyz offset
 
         # extra state for cuda raymarching
-    
+
+        #TODO: 没太看懂在干什么？
         # 3D head density grid
         density_grid = torch.zeros([self.cascade, self.grid_size ** 3]) # [CAS, H * H * H]
         density_bitfield = torch.zeros(self.cascade * self.grid_size ** 3 // 8, dtype=torch.uint8) # [CAS * H * H * H // 8]
@@ -161,12 +164,13 @@ class NeRFRenderer(nn.Module):
         # index: [B]
         # return: image: [B, N, 3], depth: [B, N]
 
-        prefix = rays_o.shape[:-1]
-        rays_o = rays_o.contiguous().view(-1, 3)
-        rays_d = rays_d.contiguous().view(-1, 3)
+        prefix = rays_o.shape[:-1] #[B, N]
+        rays_o = rays_o.contiguous().view(-1, 3) #[B*N, 3]
+        rays_d = rays_d.contiguous().view(-1, 3) #[B*N, 3]
         bg_coords = bg_coords.contiguous().view(-1, 2)
 
         # only add camera offset at training!
+        # 通过训练得到的相机偏移量对相机姿态进行修正
         if self.train_camera and (self.training or self.test_train):
             dT = self.camera_dT[index] # [1, 3]
             dR = euler_angles_to_matrix(self.camera_dR[index] / 180 * np.pi + 1e-8).squeeze(0) # [1, 3] --> [3, 3]
@@ -174,7 +178,7 @@ class NeRFRenderer(nn.Module):
             rays_o = rays_o + dT
             rays_d = rays_d @ dR
 
-        N = rays_o.shape[0] # N = B * N, in fact
+        N = rays_o.shape[0] # N = B * N, in fact，因为每次仅仅处理单张图片，所以B等于1，因此 N = B * N，共N根光线
         device = rays_o.device
 
         results = {}
@@ -187,15 +191,17 @@ class NeRFRenderer(nn.Module):
         # encode audio
         enc_a = self.encode_audio(auds) # [1, 64]
 
+        #如果对唇部形状进行平滑，需要将上一次的音频信息和当前的音频特征进行加权混合
         if enc_a is not None and self.smooth_lips:
             if self.enc_a is not None:
                 _lambda = 0.35
                 enc_a = _lambda * self.enc_a + (1 - _lambda) * enc_a
             self.enc_a = enc_a
 
-        
+        #训练时用了，推导时没用，那么这玩意到底有没有用捏？MAYBe
         if self.individual_dim > 0:
             if self.training:
+                #只会在训练时用到individual_codes，test时使用固定的 ind code。
                 ind_code = self.individual_codes[index]
             # use a fixed ind code for the unknown test data.
             else:
@@ -276,8 +282,8 @@ class NeRFRenderer(nn.Module):
         image = image.view(*prefix, 3)
         image = image.clamp(0, 1)
 
-        depth = torch.clamp(depth - nears, min=0) / (fars - nears)
-        depth = depth.view(*prefix)
+        depth = torch.clamp(depth - nears, min=0) / (fars - nears) 
+        depth = depth.view(*prefix) # [B, N]
 
         amb_aud_sum = amb_aud_sum.view(*prefix)
         amb_eye_sum = amb_eye_sum.view(*prefix)

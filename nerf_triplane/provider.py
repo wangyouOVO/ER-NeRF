@@ -434,6 +434,8 @@ class NeRFDataset:
 
         self.torso_img = []
         self.images = []
+        self.depth_images = []
+        self.parsing_images = []
 
         self.poses = []
         self.exps = []
@@ -451,8 +453,11 @@ class NeRFDataset:
         for f in tqdm.tqdm(frames, desc=f'Loading {type} data'):
 
             f_path = os.path.join(self.root_path, 'gt_imgs', str(f['img_id']) + '.jpg')
-
-            if not os.path.exists(f_path):
+            
+            #后缀可能修改为png
+            f_depth_path = os.path.join(self.root_path, 'depth_npys', str(f['img_id']) + '.npy')
+            f_parsing_path = os.path.join(self.root_path, 'parsing', str(f['img_id']) + '.png')
+            if not os.path.exists(f_path) or not os.path.exists(f_depth_path):
                 print('[WARN]', f_path, 'NOT FOUND!')
                 continue
             
@@ -460,15 +465,23 @@ class NeRFDataset:
             pose = nerf_matrix_to_ngp(pose, scale=self.scale, offset=self.offset)
             self.poses.append(pose)
             
-            #是否在这将图片给加载进内存
+            #是否在这将图片和深度图给加载进内存
             if self.preload > 0:
                 image = cv2.imread(f_path, cv2.IMREAD_UNCHANGED) # [H, W, 3] o [H, W, 4]
                 image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
                 image = image.astype(np.float32) / 255 # [H, W, 3/4]
+                
+                # depth_image = cv2.imread(f_depth_path, cv2.IMREAD_UNCHANGED) # [H, W, 1]
+                depth_image = np.load(f_depth_path)
+                parsing_image = cv2.imread(f_parsing_path, cv2.IMREAD_UNCHANGED)
 
                 self.images.append(image)
+                self.depth_images.append(depth_image)
+                self.parsing_images.append(parsing_image)
             else:
                 self.images.append(f_path)
+                self.depth_images.append(f_depth_path)
+                self.parsing_images.append(f_parsing_path)
 
             # load frame-wise bg
         
@@ -562,9 +575,13 @@ class NeRFDataset:
 
         if self.preload > 0:
             self.images = torch.from_numpy(np.stack(self.images, axis=0)) # [N, H, W, C]
+            self.depth_images = torch.from_numpy(np.stack(self.depth_images, axis=0)) # [N, H, W]
+            self.parsing_images = torch.from_numpy(np.stack(self.parsing_images, axis=0))
             self.torso_img = torch.from_numpy(np.stack(self.torso_img, axis=0)) # [N, H, W, C]
         else:
             self.images = np.array(self.images)
+            self.depth_images = np.array(self.depth_images)
+            self.parsing_images = np.array(self.parsing_images)
             self.torso_img = np.array(self.torso_img)
 
         if self.opt.asr:
@@ -642,6 +659,7 @@ class NeRFDataset:
         self.intrinsics = np.array([fl_x, fl_y, cx, cy])
 
         # directly build the coordinate meshgrid in [-1, 1]^2
+        #bg_coords存的是坐标信息，一张图H*W个像素每个像素对应的二维坐标
         self.bg_coords = get_bg_coords(self.H, self.W, self.device) # [1, H*W, 2] in [-1, 1]
 
 
@@ -690,6 +708,7 @@ class NeRFDataset:
         if self.training:
             xmin, xmax, ymin, ymax = self.face_rect[index[0]]
             face_mask = (rays['j'] >= xmin) & (rays['j'] < xmax) & (rays['i'] >= ymin) & (rays['i'] < ymax) # [B, N]
+            #face_mask是一个正方形？
             results['face_mask'] = face_mask
             
             xmin, xmax, ymin, ymax = self.lhalf_rect[index[0]]
@@ -744,6 +763,31 @@ class NeRFDataset:
             images = torch.gather(images.view(B, -1, C), 1, torch.stack(C * [rays['inds']], -1)) # [B, N, 3/4]
             
         results['images'] = images
+        
+        #拿出一批深度图
+        depth_images = self.depth_images[index]
+        parsing_images = self.parsing_images[index]
+        if self.preload == 0:
+            depth_images = np.load(depth_images[0])
+            # print(depth_images.shape)
+            # exit()
+            # 更新：1. 不在將深度保存爲png,會壓縮； 2. 使用3DMM后不再需要人臉掩膜
+            # depth_images = cv2.imread(depth_images[0], cv2.IMREAD_UNCHANGED) # [H, W]
+            # parsing_images = cv2.imread(parsing_images[0], cv2.IMREAD_UNCHANGED)
+            # headmask = (parsing_images[:,:,2] + parsing_images[:,:,1]) > 0 
+            # depth_images[headmask] = 0
+            # kernel = np.ones(shape=[4,4],dtype=np.uint8) 
+            # depth_images = cv2.erode(depth_images,kernel=kernel)
+            #TODO: 对深度数据进行预处理，以便和推理深度进行对齐
+            depth_images = depth_images.astype(np.float32) # [H, W]
+            #下次从这开始，写深度归一化^-^,还有，弄清楚下面要不要加.unsqueeze(-1)
+            depth_images = torch.from_numpy(depth_images).unsqueeze(0).unsqueeze(-1) #[1,H,W,1]
+        depth_images = depth_images.to(self.device).contiguous()
+
+        if self.training:
+            depth_images = torch.gather(depth_images.view(B, -1, 1), 1, torch.stack( [rays['inds']], -1)) # [B, N, 1]
+
+        results['depth_images'] = depth_images
 
         if self.training:
             bg_coords = torch.gather(self.bg_coords, 1, torch.stack(2 * [rays['inds']], -1)) # [1, N, 2]

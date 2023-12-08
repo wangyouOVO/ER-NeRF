@@ -245,6 +245,9 @@ def get_bg_coords(H, W, device):
     return bg_coords
 
 
+#根据是否切块，是否有掩模，对H*W的图片区域进行二维采样，并对每个采样得到的二维点
+#进行三维射线的计算，分别是相机原点rays_o和射线方向单位向量rays_d
+#对训练，采样N = 4096*16根，验证or测试直接N = H*W
 @torch.cuda.amp.autocast(enabled=False)
 def get_rays(poses, intrinsics, H, W, N=-1, patch_size=1, rect=None):
     ''' get rays
@@ -268,6 +271,12 @@ def get_rays(poses, intrinsics, H, W, N=-1, patch_size=1, rect=None):
     i, j = custom_meshgrid(torch.linspace(0, W-1, W, device=device), torch.linspace(0, H-1, H, device=device)) # float
     i = i.t().reshape([1, H*W]).expand([B, H*W]) + 0.5
     j = j.t().reshape([1, H*W]).expand([B, H*W]) + 0.5
+#i = tensor([[0.5000, 1.5000, 2.5000, 3.5000, 4.5000, 0.5000, 1.5000, 2.5000, 3.5000,
+#          4.5000, 0.5000, 1.5000, 2.5000, 3.5000, 4.5000, 0.5000, 1.5000, 2.5000,
+#          3.5000, 4.5000, 0.5000, 1.5000, 2.5000, 3.5000, 4.5000]])
+#j =  tensor([[0.5000, 0.5000, 0.5000, 0.5000, 0.5000, 1.5000, 1.5000, 1.5000, 1.5000,
+#          1.5000, 2.5000, 2.5000, 2.5000, 2.5000, 2.5000, 3.5000, 3.5000, 3.5000,
+#          3.5000, 3.5000, 4.5000, 4.5000, 4.5000, 4.5000, 4.5000]])
 
     results = {}
 
@@ -278,9 +287,11 @@ def get_rays(poses, intrinsics, H, W, N=-1, patch_size=1, rect=None):
 
             # random sample left-top cores.
             # NOTE: this impl will lead to less sampling on the image corner pixels... but I don't have other ideas.
+            #这行代码生成一个包含 num_patch 个随机整数的张量 inds_x，这些整数位于 [0, H - patch_size) 的范围内，其中 H 表示图像的高度。这些整数似乎表示每个图像块的左上角在 x 轴上的位置。
             num_patch = N // (patch_size ** 2)
             inds_x = torch.randint(0, H - patch_size, size=[num_patch], device=device)
             inds_y = torch.randint(0, W - patch_size, size=[num_patch], device=device)
+            #inds表示num_patch个patch左上角的坐标
             inds = torch.stack([inds_x, inds_y], dim=-1) # [np, 2]
 
             # create meshgrid for each patch
@@ -291,7 +302,7 @@ def get_rays(poses, intrinsics, H, W, N=-1, patch_size=1, rect=None):
             inds = inds.view(-1, 2) # [N, 2]
             inds = inds[:, 0] * W + inds[:, 1] # [N], flatten
 
-            inds = inds.expand([B, N])
+            inds = inds.expand([B, N]) #[B,num_patch*patch_size^2],取值范围在[0,W*H]之间
         
         # only get rays in the specified rect
         elif rect is not None:
@@ -479,15 +490,16 @@ class LMDMeter:
         self.region = region # mouth or face
 
         if self.backend == 'dlib':
-            import dlib
+            pass
+            # import dlib
 
-            # load checkpoint manually
-            self.predictor_path = './shape_predictor_68_face_landmarks.dat'
-            if not os.path.exists(self.predictor_path):
-                raise FileNotFoundError('Please download dlib checkpoint from http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2')
+            # # load checkpoint manually
+            # self.predictor_path = './shape_predictor_68_face_landmarks.dat'
+            # if not os.path.exists(self.predictor_path):
+            #     raise FileNotFoundError('Please download dlib checkpoint from http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2')
 
-            self.detector = dlib.get_frontal_face_detector()
-            self.predictor = dlib.shape_predictor(self.predictor_path)
+            # self.detector = dlib.get_frontal_face_detector()
+            # self.predictor = dlib.shape_predictor(self.predictor_path)
 
         else:
 
@@ -568,7 +580,23 @@ class LMDMeter:
 
     def report(self):
         return f'LMD ({self.backend}) = {self.measure():.6f}' 
-    
+
+class DepthNorm:
+    def __init__(self):
+        # 初始化参数
+        # self.eps = eps
+        self.gamma = nn.Parameter(torch.tensor(0.05)).cuda()
+        self.beta = nn.Parameter(torch.tensor(0.001)).cuda()
+        # self.alpha = nn.Parameter(torch.tensor(1)).cuda()
+        # self.theta = nn.Parameter(torch.tensor(0.001)).cuda()
+    def forward(self, x):
+        # 计算当前批次的均值和方差
+        # mean = x.mean(dim=-2)
+        # var = x.var(dim=-2, unbiased=False)
+        # normalized = (x - mean) / torch.sqrt(var + self.eps)
+        # scaled = self.alpha * (self.gamma * x + self.beta)+self.theta
+        scaled = self.gamma * x + self.beta
+        return scaled
 
 class Trainer(object):
     def __init__(self, 
@@ -577,17 +605,17 @@ class Trainer(object):
                  model, # network 
                  criterion=None, # loss function, if None, assume inline implementation in train_step
                  optimizer=None, # optimizer
-                 ema_decay=None, # if use EMA, set the decay
-                 ema_update_interval=1000, # update ema per $ training steps.
+                 ema_decay=None, # if use EMA, set the decay EMA技术是用于平滑模型参数，让模型收敛更顺利
+                 ema_update_interval=1000, # update ema per $ training steps. 
                  lr_scheduler=None, # scheduler
                  metrics=[], # metrics for evaluation, if None, use val_loss to measure performance, else use the first metric.
                  local_rank=0, # which GPU am I
                  world_size=1, # total num of GPUs
                  device=None, # device to use, usually setting to None is OK. (auto choose device)
                  mute=False, # whether to mute all print
-                 fp16=False, # amp optimize level
-                 eval_interval=1, # eval once every $ epoch
-                 max_keep_ckpt=2, # max num of saved ckpts in disk
+                 fp16=False, # amp optimize level #是否使用混合精度进行训练
+                 eval_interval=1, # eval once every $ epoch 每个epoch都要进行评估
+                 max_keep_ckpt=2, # max num of saved ckpts in disk 
                  workspace='workspace', # workspace to save logs & ckpts
                  best_mode='min', # the smaller/larger result, the better
                  use_loss_as_metric=True, # use loss as the first metric
@@ -597,6 +625,7 @@ class Trainer(object):
                  scheduler_update_every_step=False, # whether to call scheduler.step() after every train step
                  ):
         
+        self.depth_norm = DepthNorm()
         self.name = name
         self.opt = opt
         self.mute = mute
@@ -646,6 +675,7 @@ class Trainer(object):
         else:
             self.ema = None
 
+        #amp技术，用来帮助训练的
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.fp16)
 
         # optionally use LPIPS loss for patch-based training
@@ -653,6 +683,10 @@ class Trainer(object):
             import lpips
             # self.criterion_lpips_vgg = lpips.LPIPS(net='vgg').to(self.device)
             self.criterion_lpips_alex = lpips.LPIPS(net='alex').to(self.device)
+
+        # 引入深度loss
+        if self.opt.use_depth_loss == True:
+            self.depth_loss_criterion = nn.MSELoss(reduction='none').to(self.device)
 
         # variable init
         self.epoch = 0
@@ -684,6 +718,7 @@ class Trainer(object):
         self.log(f'[INFO] Trainer: {self.name} | {self.time_stamp} | {self.device} | {"fp16" if self.fp16 else "fp32"} | {self.workspace}')
         self.log(f'[INFO] #parameters: {sum([p.numel() for p in model.parameters() if p.requires_grad])}')
 
+        # 加载之前的模型，可以续上继续训练
         if self.workspace is not None:
             if self.use_checkpoint == "scratch":
                 self.log("[INFO] Training from scratch ...")
@@ -737,6 +772,11 @@ class Trainer(object):
 
         if not self.opt.torso:
             rgb = data['images'] # [B, N, 3]
+            depth = data['depth_images'] # [B, N, 1]
+            depth_real = self.depth_norm.forward(depth)
+
+
+
         else:
             rgb = data['bg_torso_color']
     
@@ -754,15 +794,51 @@ class Trainer(object):
 
         if not self.opt.torso:
             pred_rgb = outputs['image']
+
+
+
+            pred_depth = outputs['depth'].unsqueeze(-1)
+
+
+
+
         else:
             pred_rgb = outputs['torso_color']
 
-
-        # loss factor
+        # numpy_array3 = pred_depth.reshape(N,-1).cpu().detach().numpy()
+        # # 保存 NumPy 数组到文本文件
+        # np.savetxt('pred_depth.txt', numpy_array3)
+        # numpy_array4 = depth.reshape(N,-1).cpu().detach().numpy()
+        # # 保存 NumPy 数组到文本文件
+        # np.savetxt('depth.txt', numpy_array4)
+        # # loss factor
         step_factor = min(self.global_step / self.opt.iters, 1.0)
 
+#         #DEBUG
+#         print(pred_rgb.shape)
+#         print(rgb.shape)
+#         print(pred_depth.shape)
+#         print(depth.shape)
+#         loss1 = self.criterion(pred_rgb, rgb).mean(-1)
+#         loss2 = self.depth_loss_criterion(pred_depth,depth).mean(-1)
+#         print(loss1.shape)
+#         print(loss2.shape)
+#         numpy_array1 = loss1.cpu().detach().numpy()
+#         numpy_array2 = loss2.cpu().detach().numpy()
+
+# # 保存 NumPy 数组到文本文件
+#         np.savetxt('tensor_data1.txt', numpy_array1)
+#         np.savetxt('tensor_data2.txt', numpy_array2)
+#         exit()
+
         # MSE loss
-        loss = self.criterion(pred_rgb, rgb).mean(-1) # [B, N, 3] --> [B, N]
+        #TODO 关键部分，再想一想
+        mask = (depth != -1.0)
+        # loss = self.criterion(pred_rgb, rgb).mean(-1) + self.opt.depth_weight * self.depth_loss_criterion(pred_depth,depth_real).mean(-1) # [B, N, 3] --> [B, N]
+        if self.opt.use_depth_loss:
+            loss = self.criterion(pred_rgb, rgb).mean(-1) +  self.opt.depth_weight * self.depth_loss_criterion(pred_depth[mask],depth_real[mask]).mean(-1) # [B, N, 3] --> [B, N]
+        else:
+            loss = self.criterion(pred_rgb, rgb).mean(-1) # [B, N, 3] --> [B, N]
 
         if self.opt.torso:
             loss = loss.mean()
@@ -946,7 +1022,7 @@ class Trainer(object):
 
         return pred_rgb, pred_depth
 
-
+# 根据空间之内的sigma使用cubematch算法获得mesh并储存
     def save_mesh(self, save_path=None, resolution=256, threshold=10):
 
         if save_path is None:
@@ -1234,10 +1310,12 @@ class Trainer(object):
         if self.local_rank == 0:
             pbar = tqdm.tqdm(total=len(loader) * loader.batch_size, mininterval=1, bar_format='{desc}: {percentage:3.0f}% {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
 
+        # local_step是这个epoch内部的训练计数
         self.local_step = 0
 
         for data in loader:
             # update grid every 16 steps
+            #TODO: update_extra_state是在干什么？
             if self.model.cuda_ray and self.global_step % self.opt.update_extra_interval == 0:
                 with torch.cuda.amp.autocast(enabled=self.fp16):
                     self.model.update_extra_state()
