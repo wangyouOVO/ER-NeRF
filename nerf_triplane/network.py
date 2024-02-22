@@ -66,6 +66,23 @@ class AudioNet(nn.Module):
         return x
 
 
+class Lipencoder(nn.Module):
+    def __init__(self, input_dim, encoding_dim):
+        super(Lipencoder, self).__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, 20), 
+            nn.LeakyReLU(),
+            nn.Linear(20, 20), 
+            nn.LeakyReLU(),
+            nn.Linear(20, 20), 
+            nn.LeakyReLU(),
+            nn.Linear(20, encoding_dim),
+            # nn.Sigmoid()
+        )
+    def forward(self, x):
+        encoded = self.encoder(x)
+        return encoded
+    
 class MLP(nn.Module):
     def __init__(self, dim_in, dim_out, dim_hidden, num_layers):
         super().__init__()
@@ -110,6 +127,8 @@ class NeRFNetwork(NeRFRenderer):
         else:
             self.audio_in_dim = 32
         
+        self.pre_lip_dim = 20
+        self.audio_index_dim = 2
         # self.embedding 变量是一个嵌入层的实例，可以在你自定义的神经网络模块中使用，在网络的前向传播过程中，
         # 它将音频数据的分类信息嵌入为连续向量。这对于诸如语音识别或音频分类等任务非常有用。
         if self.emb:
@@ -139,9 +158,11 @@ class NeRFNetwork(NeRFRenderer):
         self.hidden_dim = 64
         self.geo_feat_dim = 64
         self.eye_att_net = MLP(self.in_dim, 1, 16, 2)
+        self.audio_index_att_net = MLP(self.in_dim, 2, 16, 2)
+        self.lip_att_net = MLP(self.in_dim, self.pre_lip_dim, 32, 2)
         self.eye_dim = 1 if self.exp_eye else 0
-        self.sigma_net = MLP(self.in_dim + self.audio_dim + self.eye_dim, 1 + self.geo_feat_dim, self.hidden_dim, self.num_layers)
-        
+        self.sigma_net = MLP(self.in_dim + self.audio_dim + self.audio_index_dim + self.eye_dim + self.pre_lip_dim , 1 + self.geo_feat_dim, self.hidden_dim, self.num_layers)
+        self.lip_encoder = Lipencoder(40,20)
         ## color network
         self.num_layers_color = 2
         self.hidden_dim_color = 64
@@ -149,7 +170,6 @@ class NeRFNetwork(NeRFRenderer):
         self.color_net = MLP(self.in_dim_dir + self.geo_feat_dim + self.individual_dim, 3, self.hidden_dim_color, self.num_layers_color)
 
         self.unc_net = MLP(self.in_dim, 1, 32, 2)
-
         self.aud_ch_att_net = MLP(self.in_dim, self.audio_dim, 64, 2)
 
         self.testing = False
@@ -252,7 +272,7 @@ class NeRFNetwork(NeRFRenderer):
         return unc
 
 
-    def forward(self, x, d, enc_a, c, e=None):
+    def forward(self, x, d, enc_a,aud_index, c, e=None,pre_lip = None):
         # x: [N, 3], in [-bound, bound]
         # d: [N, 3], nomalized in [-1, 1]
         # enc_a: [1, aud_dim]
@@ -260,7 +280,7 @@ class NeRFNetwork(NeRFRenderer):
         # e: [1, 1], eye feature
         enc_x = self.encode_x(x, bound=self.bound)
 
-        sigma_result = self.density(x, enc_a, e, enc_x)
+        sigma_result = self.density(x, enc_a,aud_index, e, enc_x ,pre_lip)
         sigma = sigma_result['sigma']
         geo_feat = sigma_result['geo_feat']
         aud_ch_att = sigma_result['ambient_aud']
@@ -284,22 +304,34 @@ class NeRFNetwork(NeRFRenderer):
         return sigma, color, aud_ch_att, eye_att, uncertainty[..., None]
 
 
-    def density(self, x, enc_a, e=None, enc_x=None):
+    def density(self, x, enc_a,aud_index=None, e=None, enc_x=None, pre_lip=None):
+        # print("density---")
+        # print(pre_lip)
         # x: [N, 3], in [-bound, bound]
         if enc_x is None:
             enc_x = self.encode_x(x, bound=self.bound)
+        pre_lip = pre_lip.squeeze(-1).repeat(enc_x.shape[0], 1)
 
         enc_a = enc_a.repeat(enc_x.shape[0], 1)
         # aud_ch_att 是 enc_x 经过 aud_ch_att_net 网络后，得到的音频特征权重，aud_ch_att_net纯纯MLP一个
         aud_ch_att = self.aud_ch_att_net(enc_x)
         enc_w = enc_a * aud_ch_att
+        
+        aud_index = aud_index.repeat(enc_x.shape[0], 1)
 
         if e is not None:
             # e = self.encoder_eye(e)
             eye_att = torch.sigmoid(self.eye_att_net(enc_x))
             e = e * eye_att
-            # e = e.repeat(enc_x.shape[0], 1)
-            h = torch.cat([enc_x, enc_w, e], dim=-1)
+            audio_index_att = torch.sigmoid(self.audio_index_att_net(enc_x))
+            aud_index = aud_index * audio_index_att
+            pre_lip = self.lip_encoder(pre_lip)
+            pre_lip_att = torch.sigmoid(self.lip_att_net(enc_x))
+            pre_lip = pre_lip * pre_lip_att
+
+            h = torch.cat([enc_x, enc_w,aud_index, e, pre_lip], dim=-1)
+
+
         else:
             h = torch.cat([enc_x, enc_w], dim=-1)
 

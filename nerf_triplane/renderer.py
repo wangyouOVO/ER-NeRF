@@ -134,6 +134,8 @@ class NeRFRenderer(nn.Module):
         # decay for enc_a
         if self.smooth_lips:
             self.enc_a = None
+        
+        self.pre_lip = None
     
     def forward(self, x, d):
         raise NotImplementedError()
@@ -158,7 +160,7 @@ class NeRFRenderer(nn.Module):
         self.local_step = 0
 
 
-    def run_cuda(self, rays_o, rays_d, auds, bg_coords, poses, eye=None, index=0, dt_gamma=0, bg_color=None, perturb=False, force_all_rays=False, max_steps=1024, T_thresh=1e-4, **kwargs):
+    def run_cuda(self, rays_o, rays_d, auds,aud_index, bg_coords, poses, eye=None, pre_lip = None,index=0, dt_gamma=0, bg_color=None, perturb=False, force_all_rays=False, max_steps=1024, T_thresh=1e-4, **kwargs):
         # rays_o, rays_d: [B, N, 3], assumes B == 1
         # auds: [B, 16]
         # index: [B]
@@ -198,6 +200,13 @@ class NeRFRenderer(nn.Module):
                 enc_a = _lambda * self.enc_a + (1 - _lambda) * enc_a
             self.enc_a = enc_a
 
+        if self.pre_lip is not None:
+            _beta = 0.2
+            pre_lip = _beta * self.pre_lip + (1 - _beta) * pre_lip
+            self.pre_lip = pre_lip
+        else:
+            self.pre_lip = pre_lip
+        
         #训练时用了，推导时没用，那么这玩意到底有没有用捏？MAYBe
         if self.individual_dim > 0:
             if self.training:
@@ -216,7 +225,7 @@ class NeRFRenderer(nn.Module):
             self.local_step += 1
 
             xyzs, dirs, deltas, rays = raymarching.march_rays_train(rays_o, rays_d, self.bound, self.density_bitfield, self.cascade, self.grid_size, nears, fars, counter, self.mean_count, perturb, 128, force_all_rays, dt_gamma, max_steps)
-            sigmas, rgbs, amb_aud, amb_eye, uncertainty = self(xyzs, dirs, enc_a, ind_code, eye)
+            sigmas, rgbs, amb_aud, amb_eye, uncertainty = self(xyzs, dirs, enc_a,aud_index, ind_code, eye, pre_lip)
             sigmas = self.density_scale * sigmas
 
             #print(f'valid RGB query ratio: {mask.sum().item() / mask.shape[0]} (total = {mask.sum().item()})')
@@ -230,7 +239,7 @@ class NeRFRenderer(nn.Module):
             results['ambient_eye'] = amb_eye_sum
             results['uncertainty'] = uncertainty_sum
 
-            results['rays'] = xyzs, dirs, enc_a, ind_code, eye
+            results['rays'] = xyzs, dirs, enc_a, ind_code, eye, pre_lip ,aud_index
 
         else:
            
@@ -263,7 +272,7 @@ class NeRFRenderer(nn.Module):
 
                 xyzs, dirs, deltas = raymarching.march_rays(n_alive, n_step, rays_alive, rays_t, rays_o, rays_d, self.bound, self.density_bitfield, self.cascade, self.grid_size, nears, fars, 128, perturb if step == 0 else False, dt_gamma, max_steps)
 
-                sigmas, rgbs, ambients_aud, ambients_eye, uncertainties = self(xyzs, dirs, enc_a, ind_code, eye)
+                sigmas, rgbs, ambients_aud, ambients_eye, uncertainties = self(xyzs, dirs, enc_a,aud_index, ind_code, eye, pre_lip)
                 sigmas = self.density_scale * sigmas
 
                 # raymarching.composite_rays_uncertainty(n_alive, n_step, rays_alive, rays_t, sigmas, rgbs, deltas, ambients, uncertainties, weights_sum, depth, image, ambient_sum, uncertainty_sum, T_thresh)
@@ -447,6 +456,9 @@ class NeRFRenderer(nn.Module):
                 eye = self.eye_area[[rand_idx]].to(self.density_bitfield.device) # [1, 1]
             else:
                 eye = None
+
+            pre_lip = self.pre_lip_lms[[rand_idx]].to(self.density_bitfield.device)
+            aud_index = self.aud_index[[rand_idx]].to(self.density_bitfield.device)
             
             # full update
             X = torch.arange(self.grid_size, dtype=torch.int32, device=self.density_bitfield.device).split(S)
@@ -472,7 +484,7 @@ class NeRFRenderer(nn.Module):
                             # add noise in [-hgs, hgs]
                             cas_xyzs += (torch.rand_like(cas_xyzs) * 2 - 1) * half_grid_size
                             # query density
-                            sigmas = self.density(cas_xyzs, enc_a, eye)['sigma'].reshape(-1).detach().to(tmp_grid.dtype)
+                            sigmas = self.density(cas_xyzs, enc_a = enc_a,aud_index=aud_index, e = eye,pre_lip = pre_lip)['sigma'].reshape(-1).detach().to(tmp_grid.dtype)
                             sigmas *= self.density_scale
                             # assign 
                             tmp_grid[cas, indices] = sigmas
@@ -660,9 +672,10 @@ class NeRFRenderer(nn.Module):
 
 
 
-    def render(self, rays_o, rays_d, auds, bg_coords, poses, staged=False, max_ray_batch=4096, **kwargs):
+    def render(self, rays_o, rays_d, auds, aud_index, bg_coords, poses, staged=False, max_ray_batch=4096, **kwargs):
         # rays_o, rays_d: [B, N, 3], assumes B == 1
         # auds: [B, 29, 16]
+        # aud_index: [B, 2]
         # eye: [B, 1]
         # bg_coords: [1, N, 2]
         # return: pred_rgb: [B, N, 3]
@@ -678,7 +691,7 @@ class NeRFRenderer(nn.Module):
             raise NotImplementedError
 
         else:
-            results = _run(rays_o, rays_d, auds, bg_coords, poses, **kwargs)
+            results = _run(rays_o, rays_d, auds,aud_index, bg_coords, poses, **kwargs)
 
         return results
     

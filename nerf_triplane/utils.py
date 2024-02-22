@@ -767,8 +767,12 @@ class Trainer(object):
         eye_mask = data['eye_mask'] # [B, N]
         lhalf_mask = data['lhalf_mask']
         eye = data['eye'] # [B, 1]
+
         auds = data['auds'] # [B, 29, 16]
+
         index = data['index'] # [B]
+        pre_lip = data['pre_lip']
+        aud_index = data['aud_index']
 
         if not self.opt.torso:
             rgb = data['images'] # [B, N, 3]
@@ -788,7 +792,7 @@ class Trainer(object):
         bg_color = data['bg_color']
         
         if not self.opt.torso:
-            outputs = self.model.render(rays_o, rays_d, auds, bg_coords, poses, eye=eye, index=index, staged=False, bg_color=bg_color, perturb=True, force_all_rays=False if (self.opt.patch_size <= 1 and not self.opt.train_camera) else True, **vars(self.opt))
+            outputs = self.model.render(rays_o, rays_d, auds,aud_index, bg_coords, poses, eye=eye,pre_lip = pre_lip, index=index, staged=False, bg_color=bg_color, perturb=True, force_all_rays=False if (self.opt.patch_size <= 1 and not self.opt.train_camera) else True, **vars(self.opt))
         else:
             outputs = self.model.render_torso(rays_o, rays_d, auds, bg_coords, poses, eye=eye, index=index, staged=False, bg_color=bg_color, perturb=True, force_all_rays=False if (self.opt.patch_size <= 1 and not self.opt.train_camera) else True, **vars(self.opt))
 
@@ -814,27 +818,9 @@ class Trainer(object):
         # # loss factor
         step_factor = min(self.global_step / self.opt.iters, 1.0)
 
-#         #DEBUG
-#         print(pred_rgb.shape)
-#         print(rgb.shape)
-#         print(pred_depth.shape)
-#         print(depth.shape)
-#         loss1 = self.criterion(pred_rgb, rgb).mean(-1)
-#         loss2 = self.depth_loss_criterion(pred_depth,depth).mean(-1)
-#         print(loss1.shape)
-#         print(loss2.shape)
-#         numpy_array1 = loss1.cpu().detach().numpy()
-#         numpy_array2 = loss2.cpu().detach().numpy()
-
-# # 保存 NumPy 数组到文本文件
-#         np.savetxt('tensor_data1.txt', numpy_array1)
-#         np.savetxt('tensor_data2.txt', numpy_array2)
-#         exit()
-
         # MSE loss
         #TODO 关键部分，再想一想
         mask = (depth != -1.0)
-        # loss = self.criterion(pred_rgb, rgb).mean(-1) + self.opt.depth_weight * self.depth_loss_criterion(pred_depth,depth_real).mean(-1) # [B, N, 3] --> [B, N]
         if self.opt.use_depth_loss:
             loss = self.criterion(pred_rgb, rgb).mean(-1) +  self.opt.depth_weight * self.depth_loss_criterion(pred_depth[mask],depth_real[mask]).mean(-1) # [B, N, 3] --> [B, N]
         else:
@@ -936,11 +922,11 @@ class Trainer(object):
         
         # regularize
         if self.global_step % 16 == 0 and not self.flip_finetune_lips:
-            xyzs, dirs, enc_a, ind_code, eye = outputs['rays']
+            xyzs, dirs, enc_a, ind_code, eye, pre_lip,aud_index  = outputs['rays']
             xyz_delta = (torch.rand(size=xyzs.shape, dtype=xyzs.dtype, device=xyzs.device) * 2 - 1) * 1e-3
             with torch.no_grad():
-                sigmas_raw, rgbs_raw, ambient_aud_raw, ambient_eye_raw, unc_raw = self.model(xyzs, dirs, enc_a.detach(), ind_code.detach(), eye)
-            sigmas_reg, rgbs_reg, ambient_aud_reg, ambient_eye_reg, unc_reg = self.model(xyzs+xyz_delta, dirs, enc_a.detach(), ind_code.detach(), eye)
+                sigmas_raw, rgbs_raw, ambient_aud_raw, ambient_eye_raw, unc_raw = self.model(xyzs, dirs, enc_a.detach(),aud_index, ind_code.detach(), eye, pre_lip)
+            sigmas_reg, rgbs_reg, ambient_aud_reg, ambient_eye_reg, unc_reg = self.model(xyzs+xyz_delta, dirs, enc_a.detach(),aud_index, ind_code.detach(), eye, pre_lip)
 
             lambda_reg = step_factor * 1e-5
             reg_loss = 0
@@ -967,6 +953,8 @@ class Trainer(object):
         auds = data['auds']
         index = data['index'] # [B]
         eye = data['eye'] # [B, 1]
+        pre_lip = data['pre_lip']
+        aud_index = data['aud_index']
 
         B, H, W, C = images.shape
 
@@ -977,7 +965,7 @@ class Trainer(object):
         # bg_color = 1
         bg_color = data['bg_color']
 
-        outputs = self.model.render(rays_o, rays_d, auds, bg_coords, poses, eye=eye, index=index, staged=True, bg_color=bg_color, perturb=False, **vars(self.opt))
+        outputs = self.model.render(rays_o, rays_d, auds,aud_index, bg_coords, poses, eye=eye,pre_lip = pre_lip, index=index, staged=True, bg_color=bg_color, perturb=False, **vars(self.opt))
 
         pred_rgb = outputs['image'].reshape(B, H, W, 3)
         pred_depth = outputs['depth'].reshape(B, H, W)
@@ -1001,7 +989,8 @@ class Trainer(object):
         auds = data['auds'] # [B, 29, 16]
         index = data['index']
         H, W = data['H'], data['W']
-
+        pre_lip = data['pre_lip']
+        aud_index = data['aud_index']
         # allow using a fixed eye area (avoid eye blink) at test
         if self.opt.exp_eye and self.opt.fix_eye >= 0:
             eye = torch.FloatTensor([self.opt.fix_eye]).view(1, 1).to(self.device)
@@ -1014,13 +1003,15 @@ class Trainer(object):
             bg_color = data['bg_color']
 
         self.model.testing = True
-        outputs = self.model.render(rays_o, rays_d, auds, bg_coords, poses, eye=eye, index=index, staged=True, bg_color=bg_color, perturb=perturb, **vars(self.opt))
+        outputs = self.model.render(rays_o, rays_d, auds,aud_index, bg_coords, poses, eye=eye, index=index,pre_lip = pre_lip, staged=True, bg_color=bg_color, perturb=perturb, **vars(self.opt))
         self.model.testing = False
 
         pred_rgb = outputs['image'].reshape(-1, H, W, 3)
         pred_depth = outputs['depth'].reshape(-1, H, W)
 
         return pred_rgb, pred_depth
+
+
 
 # 根据空间之内的sigma使用cubematch算法获得mesh并储存
     def save_mesh(self, save_path=None, resolution=256, threshold=10):
@@ -1110,6 +1101,71 @@ class Trainer(object):
 
                 pred = preds[0].detach().cpu().numpy()
                 pred = (pred * 255).astype(np.uint8)
+
+                pred_depth = preds_depth[0].detach().cpu().numpy()
+                pred_depth = (pred_depth * 255).astype(np.uint8)
+
+                if write_image:
+                    imageio.imwrite(path, pred)
+                    imageio.imwrite(path_depth, pred_depth)
+
+                all_preds.append(pred)
+                all_preds_depth.append(pred_depth)
+
+                pbar.update(loader.batch_size)
+
+        # write video
+        all_preds = np.stack(all_preds, axis=0)
+        all_preds_depth = np.stack(all_preds_depth, axis=0)
+        imageio.mimwrite(os.path.join(save_path, f'{name}.mp4'), all_preds, fps=25, quality=8, macro_block_size=1)
+        imageio.mimwrite(os.path.join(save_path, f'{name}_depth.mp4'), all_preds_depth, fps=25, quality=8, macro_block_size=1)
+
+        self.log(f"==> Finished Test.")
+
+    def infer(self, device,loader, save_path=None, name=None, write_image=False,lip_detector = None):
+
+        if save_path is None:
+            save_path = os.path.join(self.workspace, 'results')
+
+        if name is None:
+            name = f'{self.name}_ep{self.epoch:04d}'
+
+        os.makedirs(save_path, exist_ok=True)
+        
+        self.log(f"==> Start Test, save results to {save_path}")
+
+        pbar = tqdm.tqdm(total=len(loader) * loader.batch_size, bar_format='{percentage:3.0f}% {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
+        self.model.eval()
+
+        all_preds = []
+        all_preds_depth = []
+        pre_lip_lms = None
+
+        with torch.no_grad():
+
+            for i, data in enumerate(loader):
+                if pre_lip_lms != None:
+                    data['pre_lip'] = pre_lip_lms
+                with torch.cuda.amp.autocast(enabled=self.fp16):
+                    preds, preds_depth = self.test_step(data)                
+                
+                path = os.path.join(save_path, f'{name}_{i:04d}_rgb.png')
+                path_depth = os.path.join(save_path, f'{name}_{i:04d}_depth.png')
+
+                #self.log(f"[INFO] saving test image to {path}")
+
+                if self.opt.color_space == 'linear':
+                    preds = linear_to_srgb(preds)
+
+                pred = preds[0].detach().cpu().numpy()
+                pred = (pred * 255).astype(np.uint8)
+
+                lms = lip_detector.get_landmarks(pred)
+                if len(lms) > 0:
+                    lands = lms[0].reshape(-1, 2)[:,:2]
+                    pre_lip_lms = lands[48:,:].reshape((40,-1))
+                    pre_lip_lms -= np.mean(pre_lip_lms)
+                    pre_lip_lms = torch.from_numpy(pre_lip_lms).to(device).to(torch.float32)
 
                 pred_depth = preds_depth[0].detach().cpu().numpy()
                 pred_depth = (pred_depth * 255).astype(np.uint8)

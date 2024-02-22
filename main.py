@@ -23,6 +23,7 @@ if __name__ == '__main__':
     parser.add_argument('--data_range', type=int, nargs='*', default=[0, -1], help="data range to use")
     parser.add_argument('--workspace', type=str, default='workspace')
     parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--infer',action='store_true',help="use other audio")
 
     ### training options
     parser.add_argument('--iters', type=int, default=200000, help="training iters")
@@ -56,7 +57,7 @@ if __name__ == '__main__':
     parser.add_argument('--exp_eye', action='store_true', help="explicitly control the eyes")
     parser.add_argument('--fix_eye', type=float, default=-1, help="fixed eye area, negative to disable, set to 0-0.3 for a reasonable eye")
     parser.add_argument('--smooth_eye', action='store_true', help="smooth the eye area sequence")
-
+    parser.add_argument('--stable_lip',action='store_true', help="smooth the lip move")
     parser.add_argument('--torso_shrink', type=float, default=0.8, help="shrink bg coords to allow more flexibility in deform")
 
     ### dataset options
@@ -91,6 +92,7 @@ if __name__ == '__main__':
     parser.add_argument('--att', type=int, default=2, help="audio attention mode (0 = turn off, 1 = left-direction, 2 = bi-direction)")
     parser.add_argument('--aud', type=str, default='', help="audio source (empty will load the default, else should be a path to a npy file)")
     parser.add_argument('--emb', action='store_true', help="use audio class + embedding instead of logits")
+    parser.add_argument('--aud_index_src', type=str, default='', help="audio index ")
 
     parser.add_argument('--ind_dim', type=int, default=4, help="individual code dim, 0 to turn off")
     parser.add_argument('--ind_num', type=int, default=10000, help="number of individual codes, should be larger than training dataset size")
@@ -123,6 +125,8 @@ if __name__ == '__main__':
     parser.add_argument('-r', type=int, default=10)
 
     opt = parser.parse_args()
+
+    opt.stable_lip = True
 
     if opt.O:
         opt.fp16 = True
@@ -174,8 +178,22 @@ if __name__ == '__main__':
     # print(model)
 
     criterion = torch.nn.MSELoss(reduction='none')
+    if opt.infer:
+        import face_alignment
+        try:
+            fa = face_alignment.FaceAlignment(face_alignment.LandmarksType._2D, flip_input=False)
+        except:
+            fa = face_alignment.FaceAlignment(face_alignment.LandmarksType.TWO_D, flip_input=False)
+        metrics = [PSNRMeter(), LPIPSMeter(device=device), LMDMeter(backend='fan')]
+        trainer = Trainer('ngp', opt, model, device=device, workspace=opt.workspace, criterion=criterion, fp16=opt.fp16, metrics=metrics, use_checkpoint=opt.ckpt)
+        test_set = NeRFDataset(opt, device=device, type='train')
+        test_set.training = False 
+        test_set.num_rays = -1
+        test_loader = test_set.dataloader()
+        trainer.infer(device=device,loader = test_loader,lip_detector=fa)
+        exit()
 
-    if opt.test:
+    elif opt.test:
         
         if opt.gui:
             metrics = [] # use no metric in GUI for faster initialization...
@@ -226,8 +244,10 @@ if __name__ == '__main__':
         #这种写法真抽象啊，
         # temp fix: for update_extra_states
         model.aud_features = train_loader._data.auds
+        model.aud_index = train_loader._data.aud_indexs
         model.eye_area = train_loader._data.eye_area
         model.poses = train_loader._data.poses
+        model.pre_lip_lms = train_loader._data.pre_lip_lms
 
         # decay to 0.1 * init_lr at last iter step
         if opt.finetune_lips:

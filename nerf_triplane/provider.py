@@ -401,18 +401,23 @@ class NeRFDataset:
                     aud_features = np.load(os.path.join(self.root_path, 'aud_eo.npy'))
                 elif 'deepspeech' in self.opt.asr_model:
                     aud_features = np.load(os.path.join(self.root_path, 'aud.npy'))
+                    aud_index = np.load(os.path.join(self.root_path, 'aud_index.npy'))
                 # elif 'hubert_cn' in self.opt.asr_model:
                 #     aud_features = np.load(os.path.join(self.root_path, 'aud_hu_cn.npy'))
                 elif 'hubert' in self.opt.asr_model:
                     aud_features = np.load(os.path.join(self.root_path, 'aud_hu.npy'))
                 else:
                     aud_features = np.load(os.path.join(self.root_path, 'aud.npy'))
+                    aud_index = np.load(os.path.join(self.root_path, 'aud_index.npy'))
             # cross-driven extracted features. 
             else:
                 aud_features = np.load(self.opt.aud)
+                aud_index = np.load(self.opt.aud_index_src)
+
 
             aud_features = torch.from_numpy(aud_features)
-
+            aud_index = torch.from_numpy(aud_index).float()
+                
             # support both [N, 16] labels and [N, 16, K] logits
             if len(aud_features.shape) == 3:
                 aud_features = aud_features.float().permute(0, 2, 1) # [N, 16, 29] --> [N, 29, 16]    
@@ -426,6 +431,7 @@ class NeRFDataset:
                 aud_features = aud_features.long()
 
             print(f'[INFO] load {self.opt.aud} aud_features: {aud_features.shape}')
+            print(f'[INFO] load {self.opt.aud_index_src} aud_indexs: {aud_index.shape}')
 
         # load action units
         import pandas as pd
@@ -441,12 +447,15 @@ class NeRFDataset:
         self.exps = []
 
         self.auds = []
+        self.aud_indexs = []
         
         #face_rect是整个脸的bbox,lhalf_rect是半张脸(鼻子？)的bbox
         self.face_rect = []
         self.lhalf_rect = []
         #以嘴唇为中心的方形区域，覆盖整个嘴唇的区域
         self.lips_rect = []
+        #唇部的特征点
+        self.pre_lip_lms = []
         self.eye_area = []
         self.eye_rect = []
 
@@ -498,8 +507,13 @@ class NeRFDataset:
 
             # find the corresponding audio to the image frame
             if not self.opt.asr and self.opt.aud == '':
+                # print(aud_features.shape)
+                # print(aud_index.shape)
+                # exit()
                 aud = aud_features[min(f['aud_id'], aud_features.shape[0] - 1)] # careful for the last frame...
                 self.auds.append(aud)
+                aud_index_ = aud_index[min(f['aud_id'], aud_index.shape[0] - 1)] # careful for the last frame...
+                self.aud_indexs.append(aud_index_)
 
             # load lms and extract face
             lms = np.loadtxt(os.path.join(self.root_path, 'ori_imgs', str(f['img_id']) + '.lms')) # [68, 2]
@@ -546,7 +560,16 @@ class NeRFDataset:
                 ymax = min(self.W, cy + l)
 
                 self.lips_rect.append([xmin, xmax, ymin, ymax])
-        
+
+            if self.opt.stable_lip:
+                if f['img_id'] == 0:
+                    pre_lms = np.loadtxt(os.path.join(self.root_path, 'ori_imgs', str(f['img_id']) + '.lms'))
+                else:
+                    pre_lms = np.loadtxt(os.path.join(self.root_path, 'ori_imgs', str(f['img_id']-1) + '.lms'))
+                pre_lip_lms = pre_lms[48:,:].reshape((40,-1))
+                pre_lip_lms -= np.mean(pre_lip_lms)
+                self.pre_lip_lms.append(pre_lip_lms)
+                # pre_lip_lms = torch.from_numpy(pre_lip_lms)
         # load pre-extracted background image (should be the same size as training image...)
 
         if self.opt.bg_img == 'white': # special
@@ -566,6 +589,12 @@ class NeRFDataset:
         self.bg_img = bg_img
 
         self.poses = np.stack(self.poses, axis=0)
+
+
+
+        if self.opt.stable_lip:
+            self.pre_lip_lms = np.stack(self.pre_lip_lms, axis=0)
+            self.pre_lip_lms = torch.from_numpy(self.pre_lip_lms).to(self.device).to(torch.float32)
 
         # smooth camera path...
         if self.opt.smooth_path:
@@ -591,9 +620,11 @@ class NeRFDataset:
             # auds corresponding to images
             if self.opt.aud == '':
                 self.auds = torch.stack(self.auds, dim=0) # [N, 32, 16]
+                self.aud_indexs = torch.stack(self.aud_indexs, dim=0)
             # auds is novel, may have a different length with images
             else:
                 self.auds = aud_features
+                self.aud_indexs = aud_index
         
         self.bg_img = torch.from_numpy(self.bg_img)
 
@@ -629,6 +660,8 @@ class NeRFDataset:
 
             if self.auds is not None:
                 self.auds = self.auds.to(self.device)
+            if self.aud_indexs is not None:
+                self.aud_indexs = self.aud_indexs.to(self.device)
 
             self.bg_img = self.bg_img.to(torch.half).to(self.device)
 
@@ -686,9 +719,16 @@ class NeRFDataset:
             auds = get_audio_features(self.auds, self.opt.att, index[0]).to(self.device)
             results['auds'] = auds
 
+        if self.aud_indexs is not None:
+            results['aud_index'] = self.aud_indexs[[index[0]]].to(self.device)
+
+
         # head pose and bg image may mirror (replay --> <-- --> <--).
         index[0] = self.mirror_index(index[0])
-
+        if self.pre_lip_lms is not None:
+            # print(self.pre_lip_lms.shape)
+            # exit()
+            results['pre_lip'] = self.pre_lip_lms[index[0]]
         poses = self.poses[index].to(self.device) # [B, 4, 4]
         
         if self.training and self.opt.finetune_lips:
